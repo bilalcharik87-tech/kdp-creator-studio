@@ -11,6 +11,9 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
 import arabic_reshaper
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import Paragraph
+from reportlab.lib.enums import TA_CENTER
 from bidi.algorithm import get_display
 
 st.set_page_config(page_title="AI StoryCraft Studio Pro", page_icon="✨", layout="wide")
@@ -122,54 +125,72 @@ def render_pro_pdf(story_data, images_dict, target_lang):
     size = 8.5 * inch
     c = canvas.Canvas(buffer, pagesize=(size, size))
     
-    # --- صفحة الغلاف الفاخرة ---
+    styles = getSampleStyleSheet()
+    
+    # نمط نص مخصص للأطفال مع التفاف تلقائي وهوامش آمنة
+    story_text_style = ParagraphStyle(
+        'StoryText',
+        fontName='Helvetica-Bold',
+        fontSize=13,
+        leading=19,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#2C3E50")
+    )
+    
+    # --- 1. صفحة الغلاف ---
     c.setFillColor(colors.HexColor("#FFFDF9"))
     c.rect(0, 0, size, size, fill=1, stroke=0)
     
-    # عنوان الكتاب
+    # عنوان الغلاف
     c.setFillColor(colors.HexColor("#D9534F"))
-    c.setFont("Helvetica-Bold", 26)
-    title = format_arabic(story_data['title']) if "العربية" in target_lang else story_data['title']
-    c.drawCentredString(size / 2, size - 1.2 * inch, title)
+    c.setFont("Helvetica-Bold", 24)
+    title_text = format_arabic(story_data['title']) if "العربية" in target_lang else story_data['title']
+    c.drawCentredString(size / 2, size - 1.2 * inch, title_text)
     
+    # صورة الغلاف (استخدام صورة الصفحة 1 كغلاف)
     if 1 in images_dict and images_dict[1] is not None:
         reader = ImageReader(images_dict[1])
-        c.drawImage(reader, 1.25 * inch, 2.2 * inch, width=6 * inch, height=5 * inch, preserveAspectRatio=True)
+        c.drawImage(reader, 1.25 * inch, 2.2 * inch, width=6 * inch, height=4.8 * inch, preserveAspectRatio=True)
         
     c.setFillColor(colors.HexColor("#7F8C8D"))
-    c.setFont("Helvetica", 12)
-    c.drawCentredString(size / 2, 1.2 * inch, "Created with AI StoryCraft Studio")
+    c.setFont("Helvetica", 11)
+    c.drawCentredString(size / 2, 1.2 * inch, "A Beautiful Story for Kids • KDP Edition")
     c.showPage()
     
-    # --- الصفحات الداخلية ---
+    # --- 2. الصفحات الداخلية ---
     for page in story_data["pages"]:
         num = page["page_number"]
         
-        # خلفية مريحة
+        # خلفية الصفحة
         c.setFillColor(colors.HexColor("#FAFAFA"))
         c.rect(0, 0, size, size, fill=1, stroke=0)
         
-        # رسم الصورة الملونة الحقيقية
+        # رسم صورة الصفحة (سواء 1 أو 2 أو 3 ...)
         if num in images_dict and images_dict[num] is not None:
             reader = ImageReader(images_dict[num])
-            c.drawImage(reader, 1.25 * inch, 3.2 * inch, width=6 * inch, height=4.6 * inch, preserveAspectRatio=True)
+            c.drawImage(reader, 1.25 * inch, 3.2 * inch, width=6 * inch, height=4.5 * inch, preserveAspectRatio=True)
+        else:
+            # إطار بديل في حال لم تولد الصورة بعد
+            c.setStrokeColor(colors.HexColor("#E2E8F0"))
+            c.rect(1.25 * inch, 3.2 * inch, 6 * inch, 4.5 * inch)
+            c.setFillColor(colors.HexColor("#A0AEC0"))
+            c.setFont("Helvetica", 12)
+            c.drawCentredString(size / 2, 5.4 * inch, f"[ Illustration {num} ]")
         
-        # بطاقة النص السفلي
-        c.setFillColor(colors.HexColor("#2C3E50"))
-        c.setFont("Helvetica-Bold", 13)
+        # كتابة النص مع التفاف تلقائي وهامش آمن يمنع خروج النص عن الصفحة
         txt = format_arabic(page["text"]) if "العربية" in target_lang else page["text"]
+        p = Paragraph(txt, story_text_style)
         
-        # تقسيم السطور لتظهر بشكل منسق
-        words = txt.split(" ")
-        line1 = " ".join(words[:len(words)//2])
-        line2 = " ".join(words[len(words)//2:])
-        c.drawCentredString(size / 2, 2.2 * inch, line1)
-        c.drawCentredString(size / 2, 1.8 * inch, line2)
+        # عرض الصندوق النصي الملتف في الأسفل
+        p_width = 6.2 * inch
+        p_height = 1.8 * inch
+        p.wrapOn(c, p_width, p_height)
+        p.drawOn(c, (size - p_width) / 2, 1.3 * inch)
         
         # رقم الصفحة
         c.setFillColor(colors.HexColor("#BDC3C7"))
         c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(size / 2, 0.8 * inch, f"- {num} -")
+        c.drawCentredString(size / 2, 0.6 * inch, f"- {num} -")
         c.showPage()
         
     c.save()
