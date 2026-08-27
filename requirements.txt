@@ -1,2 +1,5 @@
 streamlit
 reportlab
+arabic-reshaper
+python-bidi
+google-generativeai
