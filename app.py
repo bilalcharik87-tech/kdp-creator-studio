@@ -8,8 +8,6 @@ from bidi.algorithm import get_display
 from reportlab.lib.pagesizes import inch
 from reportlab.pdfgen import canvas
 
-==========================================
-
 1. إعدادات الواجهة وهوية التطبيق
 
 ==========================================
