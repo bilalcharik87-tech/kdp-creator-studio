@@ -99,42 +99,50 @@ def generate_story_agent(
     prompt_idea, target_lang, age_group, pages_count, style_theme
 ):
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+
+    # استخدام التسمية القياسية المحدثة لتفادي خطأ 404
+    try:
+        model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
+    except Exception:
+        model = genai.GenerativeModel("gemini-pro")
 
     system_instruction = f"""
     You are an expert Children's Book Author and Amazon KDP Publishing Specialist.
-    Generate a complete, high-converting children's storybook structured strictly as a JSON object.
+    Generate a complete children's storybook structured strictly as a JSON object.
     
     Parameters:
     - Target Language: {target_lang}
     - Age Group: {age_group}
     - Total Story Pages: {pages_count}
-    - Artistic Illustration Style: {style_theme}
+    - Illustration Style: {style_theme}
     
-    JSON Schema Required:
+    Respond ONLY with valid JSON using this exact schema:
     {{
-        "title": "Story Title in {target_lang}",
-        "kdp_description": "Compelling 2-paragraph HTML book description with bullet points",
-        "keywords": ["7 high-volume KDP search keywords"],
-        "character_design": "Consistent physical description of the main character for Midjourney/DALL-E",
+        "title": "Book title in {target_lang}",
+        "kdp_description": "2-paragraph description in {target_lang}",
+        "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5", "keyword6", "keyword7"],
+        "character_design": "Detailed prompt describing main character consistency",
         "pages": [
             {{
                 "page_number": 1,
-                "text": "Story text for page 1 in {target_lang}",
-                "image_prompt": "Detailed AI art prompt including character details, setting, lighting, in {style_theme} style --ar 1:1"
+                "text": "Page 1 story text in {target_lang}",
+                "image_prompt": "Midjourney/DALL-E prompt in {style_theme} style"
             }}
         ]
     }}
-    Ensure valid JSON only without markdown formatting.
     """
 
     response = model.generate_content(
         f"{system_instruction}\n\nStory Concept: {prompt_idea}"
     )
-    clean_json = (
-        response.text.replace("```json", "").replace("```", "").strip()
+
+    clean_text = (
+        response.text.strip()
+        .replace("```json", "")
+        .replace("```", "")
+        .strip()
     )
-    return json.loads(clean_json)
+    return json.loads(clean_text)
 
 
 # دالة معالجة النص العربي
