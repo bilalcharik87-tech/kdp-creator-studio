@@ -6,6 +6,7 @@ import streamlit as st
 import google.generativeai as genai
 from reportlab.lib.pagesizes import inch
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -131,40 +132,58 @@ def create_pdf_with_images(story_data, images_dict, target_lang):
     buffer = io.BytesIO()
     size = 8.5 * inch
     c = canvas.Canvas(buffer, pagesize=(size, size))
-    
+
     # صفحة الغلاف
     c.setFont("Helvetica-Bold", 24)
-    title = format_arabic(story_data['title']) if "العربية" in target_lang else story_data['title']
+    title = (
+        format_arabic(story_data["title"])
+        if "العربية" in target_lang
+        else story_data["title"]
+    )
     c.drawCentredString(size / 2, size - 1.2 * inch, title)
-    
+
     if "cover" in images_dict and images_dict["cover"] is not None:
-        img_buffer = io.BytesIO()
-        images_dict["cover"].save(img_buffer, format="PNG")
-        img_buffer.seek(0)
-        c.drawImage(img_buffer, 1.25 * inch, 2 * inch, width=6 * inch, height=5 * inch, preserveAspectRatio=True)
+        cover_reader = ImageReader(images_dict["cover"])
+        c.drawImage(
+            cover_reader,
+            1.25 * inch,
+            2 * inch,
+            width=6 * inch,
+            height=5 * inch,
+            preserveAspectRatio=True,
+        )
     c.showPage()
-    
+
     # الصفحات الداخلية
     for page in story_data["pages"]:
         p_num = page["page_number"]
-        
-        # رسم الصورة المولدة
+
+        # رسم الصورة باستخدام ImageReader لدعم كائنات PIL مباشرة
         if p_num in images_dict and images_dict[p_num] is not None:
-            img_buffer = io.BytesIO()
-            images_dict[p_num].save(img_buffer, format="PNG")
-            img_buffer.seek(0)
-            c.drawImage(img_buffer, 1.25 * inch, 3.2 * inch, width=6 * inch, height=4.2 * inch, preserveAspectRatio=True)
-            
+            img_reader = ImageReader(images_dict[p_num])
+            c.drawImage(
+                img_reader,
+                1.25 * inch,
+                3.2 * inch,
+                width=6 * inch,
+                height=4.2 * inch,
+                preserveAspectRatio=True,
+            )
+
         # كتابة النص
         c.setFont("Helvetica-Bold", 14)
-        txt = format_arabic(page["text"]) if "العربية" in target_lang else page["text"]
+        txt = (
+            format_arabic(page["text"])
+            if "العربية" in target_lang
+            else page["text"]
+        )
         c.drawCentredString(size / 2, 2 * inch, txt)
-        
+
         # رقم الصفحة
         c.setFont("Helvetica", 10)
         c.drawCentredString(size / 2, 0.8 * inch, f"- {p_num} -")
         c.showPage()
-        
+
     c.save()
     buffer.seek(0)
     return buffer
