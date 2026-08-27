@@ -86,16 +86,20 @@ with st.sidebar:
 # ==========================================
 def get_working_model(key):
     genai.configure(api_key=key)
+    # قائمة بأسماء الموديلات الأحدث حسب التحديث الأخير
+    priority_models = [
+        "models/gemini-3.6-flash",
+        "gemini-3.6-flash",
+        "models/gemini-2.5-flash-latest",
+        "models/gemini-1.5-flash",
+    ]
+
     try:
+        # فحص الموديلات المتاحة فعلياً في حسابك واختيار المناسب منها
         available_models = [
-            m.name for m in genai.list_models()
+            m.name
+            for m in genai.list_models()
             if "generateContent" in m.supported_generation_methods
-        ]
-        priority_models = [
-            "models/gemini-1.5-flash",
-            "models/gemini-1.5-flash-latest",
-            "models/gemini-1.5-pro",
-            "models/gemini-pro"
         ]
         for p in priority_models:
             if p in available_models:
@@ -104,9 +108,14 @@ def get_working_model(key):
             return genai.GenerativeModel(available_models[0])
     except Exception:
         pass
-    return genai.GenerativeModel("gemini-1.5-flash")
 
-def generate_story_agent(prompt_idea, target_lang, age_group, pages_count, style_theme):
+    # إذا لم يستطع الفحص، يستخدم الموديل الموصى به مباشرة
+    return genai.GenerativeModel("models/gemini-3.6-flash")
+
+
+def generate_story_agent(
+    prompt_idea, target_lang, age_group, pages_count, style_theme
+):
     model = get_working_model(api_key)
 
     system_instruction = f"""
@@ -136,9 +145,11 @@ def generate_story_agent(prompt_idea, target_lang, age_group, pages_count, style
     Respond ONLY with valid JSON.
     """
 
-    response = model.generate_content(f"{system_instruction}\n\nStory Concept: {prompt_idea}")
+    response = model.generate_content(
+        f"{system_instruction}\n\nStory Concept: {prompt_idea}"
+    )
     raw_text = response.text.strip()
-    
+
     # تنظيف مخرجات JSON
     if raw_text.startswith("```json"):
         raw_text = raw_text[7:]
@@ -146,14 +157,8 @@ def generate_story_agent(prompt_idea, target_lang, age_group, pages_count, style
         raw_text = raw_text[3:]
     if raw_text.endswith("```"):
         raw_text = raw_text[:-3]
-        
-    return json.loads(raw_text.strip())
 
-def format_arabic(text):
-    try:
-        return get_display(arabic_reshaper.reshape(text))
-    except Exception:
-        return text
+    return json.loads(raw_text.strip())
 
 # ==========================================
 # 4. محرك توليد وتنسيق PDF
