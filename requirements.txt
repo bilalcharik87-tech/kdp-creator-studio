@@ -1,5 +1,7 @@
 streamlit
 reportlab
+Pillow
+requests
 arabic-reshaper
 python-bidi
 google-generativeai
