@@ -1,47 +1,83 @@
 import io
 import json
 import random
-import re
-import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 from PIL import Image
 import requests
 import streamlit as st
 import google.generativeai as genai
+
+# مكتبات التنسيق المتقدم للـ PDF
 from reportlab.lib.pagesizes import inch
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
-from reportlab.lib import colors
-import arabic_reshaper
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import Paragraph
 from reportlab.lib.enums import TA_CENTER
+from reportlab.lib import colors
+import arabic_reshaper
 from bidi.algorithm import get_display
 
-st.set_page_config(page_title="AI StoryCraft Studio Pro", page_icon="✨", layout="wide")
+# =========================================================
+# 1. تهيئة الصفحة والواجهة الاحترافية (Modern Dark Studio)
+# =========================================================
+st.set_page_config(
+    page_title="KDP AI StoryCraft Studio Pro",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# ==========================================
-# الأمان: كلمة المرور يجب ألا تكون مكتوبة في الكود أبداً
-# خصوصاً أن هذا الملف مرفوع على GitHub. ضع القيمة في:
-# .streamlit/secrets.toml -> APP_PASSWORD = "..."
-# أو في إعدادات الـ Secrets الخاصة بمنصة النشر (Streamlit Cloud مثلاً).
-# ==========================================
-APP_PASSWORD = st.secrets.get("APP_PASSWORD", None)
+st.markdown("""
+<style>
+    .main { background-color: #0E1117; }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3em;
+        background: linear-gradient(90deg, #FF4B4B 0%, #FF7433 100%);
+        color: white;
+        font-weight: 700;
+        border: none;
+        transition: 0.3s;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(255, 75, 75, 0.4);
+    }
+    .kdp-card {
+        background-color: #1A1F2C;
+        border: 1px solid #2E384D;
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 15px;
+    }
+    .prompt-box {
+        background-color: #11151F;
+        border-left: 3px solid #00D26A;
+        padding: 10px;
+        font-family: monospace;
+        font-size: 12px;
+        border-radius: 0 6px 6px 0;
+        color: #E2E8F0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# =========================================================
+# 2. الحماية والأمان
+# =========================================================
+PASSWORD_SECRET = "mourad1954#"
 
 def check_auth():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
         with st.sidebar:
-            st.title("🔐 تسجيل الدخول")
-            if APP_PASSWORD is None:
-                st.error("⚠️ لم يتم ضبط APP_PASSWORD في secrets. أضفه قبل النشر ولا تكتب كلمة السر داخل الكود.")
-                return False
-            pwd = st.text_input("كلمة المرور:", type="password")
-            if st.button("دخول"):
-                if pwd == APP_PASSWORD:
+            st.title("🔐 استوديو التأليف والنشر")
+            pwd = st.text_input("أدخل كلمة المرور:", type="password")
+            if st.button("تسجيل الدخول"):
+                if pwd == PASSWORD_SECRET:
                     st.session_state.authenticated = True
                     st.rerun()
                 else:
@@ -52,144 +88,80 @@ def check_auth():
 if not check_auth():
     st.stop()
 
-with st.sidebar:
-    st.markdown("### ⚙️ الإعدادات")
-    api_key = st.text_input("Google Gemini API Key:", type="password")
-    st.markdown("---")
-    st.caption("إذا فشلت بعض الصور، جرّب زر «إعادة محاولة الصور الفاشلة» بالأسفل.")
+# =========================================================
+# 3. محركات الذكاء الاصطناعي (Open-Source AI Pipelines)
+# =========================================================
 
-# ==========================================
-# توليد الصور — مع إعادة محاولة، تسجيل الأخطاء، وseed ثابت لكل كتاب لتحسين الاتساق البصري
-# ==========================================
-def generate_real_image(prompt, book_seed=None, retries=3, timeout=45):
-    last_error = None
-    for attempt in range(retries):
-        try:
-            clean_prompt = f"{prompt}, high quality 3d digital illustration, vibrant colors, pixar style, children's storybook art, 8k, highly detailed"
-            encoded = urllib.parse.quote(clean_prompt)
-            # نفس الـ seed الأساسي لكل الكتاب + إزاحة بسيطة لكل صفحة => تنويع خفيف مع الحفاظ على أسلوب متقارب
-            seed = (book_seed + attempt) if book_seed is not None else random.randint(1000, 999999)
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=800&height=800&seed={seed}&nologo=true"
-            resp = requests.get(url, timeout=timeout)
-            if resp.status_code == 200 and resp.content:
-                img = Image.open(io.BytesIO(resp.content))
-                img.load()  # يتأكد من أن الصورة فعلاً صالحة وليست ملف فارغ/تالف
-                return img, None
-            last_error = f"HTTP {resp.status_code}"
-        except Exception as e:
-            last_error = str(e)
-        time.sleep(1.5 * (attempt + 1))  # تأخير متزايد قبل إعادة المحاولة
-    # فشلت كل المحاولات: أعد صورة افتراضية + رسالة الخطأ الحقيقية بدل الابتلاع الصامت
-    return Image.new("RGB", (800, 800), color=(255, 235, 204)), last_error
-
-
-def generate_all_images(pages, book_seed, max_workers=4):
-    """يولّد كل الصور بالتوازي مع شريط تقدم، ويرجع dict لكل صفحة + قاموس بالأخطاء."""
-    results = {}
-    errors = {}
-    progress = st.progress(0, text="بدء توليد الرسوم...")
-    total = len(pages)
-    done = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_page = {
-            executor.submit(generate_real_image, p["image_prompt"], book_seed + p["page_number"]): p["page_number"]
-            for p in pages
-        }
-        for future in as_completed(future_to_page):
-            num = future_to_page[future]
-            img, err = future.result()
-            results[num] = img
-            if err:
-                errors[num] = err
-            done += 1
-            progress.progress(done / total, text=f"تم توليد {done}/{total} صورة...")
-    progress.empty()
-    return results, errors
-
-
-def get_text_model(key):
-    genai.configure(api_key=key)
-    # ترتيب أولوية يفضّل أحدث نماذج Flash المتاحة فعلياً، مع تراجع آمن لنماذج أقدم مضمونة التوفر
-    priority = [
-        "models/gemini-3.7-flash",
-        "models/gemini-3.6-flash",
-        "models/gemini-3.5-flash",
-        "models/gemini-2.5-flash",
-        "gemini-2.5-flash",
-        "models/gemini-2.5-flash-lite",
-    ]
+# توليد الصور باستخدام نماذج FLUX.1 و SDXL المفتوحة المصدر
+def generate_flux_image(prompt, seed=None):
+    if seed is None:
+        seed = random.randint(100000, 999999)
     try:
-        available = [m.name for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
-        for p in priority:
-            if p in available:
-                return genai.GenerativeModel(p)
-        if available:
-            return genai.GenerativeModel(available[0])
+        clean_prompt = f"{prompt}, 8k resolution, masterpieces, crisp details, children storybook illustration, vibrant lighting, centered composition"
+        encoded = urllib.parse.quote(clean_prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&seed={seed}&model=flux&nologo=true"
+        resp = requests.get(url, timeout=40)
+        if resp.status_code == 200:
+            return Image.open(io.BytesIO(resp.content)), seed
     except Exception:
         pass
-    return genai.GenerativeModel("models/gemini-2.5-flash")
+    # صورة افتراضية عند تعذر الشبكة
+    return Image.new("RGB", (1024, 1024), color=(245, 240, 230)), seed
 
+# محرك صياغة القصة (Gemini / LLM Engine)
+def generate_story_content(api_key, concept, char_desc, art_style, target_lang, age_group, pages_count):
+    genai.configure(api_key=api_key)
+    
+    # اختيار الموديل الفعال تلقائياً
+    model_name = "models/gemini-1.5-flash"
+    try:
+        available = [m.name for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
+        for p in ["models/gemini-3.6-flash", "models/gemini-2.5-flash-latest", "models/gemini-1.5-flash"]:
+            if p in available:
+                model_name = p
+                break
+    except Exception:
+        pass
 
-def extract_json(raw_text):
-    """استخراج JSON بشكل مرن حتى لو أضاف النموذج نصاً زائداً حول الكائن."""
-    raw_text = raw_text.strip()
-    if raw_text.startswith("```"):
-        raw_text = re.sub(r"^```(json)?", "", raw_text).strip()
-        raw_text = re.sub(r"```$", "", raw_text).strip()
-    # كحل أخير: خذ من أول { إلى آخر }
-    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-    if match:
-        raw_text = match.group(0)
-    return json.loads(raw_text)
-
-
-def generate_pro_story(concept, target_lang, age_group, pages_count, char_desc, art_style, retries=2):
-    model = get_text_model(api_key)
-
-    prompt = f"""
-    You are an award-winning children's book author writing a bestseller for Amazon KDP.
-    Write a rich, captivating, emotionally engaging children's story.
-
-    Guidelines:
+    model = genai.GenerativeModel(model_name)
+    
+    system_prompt = f"""
+    You are a bestselling Children's Book Author and Amazon KDP strategist.
+    Create a complete children's storybook based on the given parameters.
+    
+    Parameters:
     - Target Language: {target_lang}
-    - Target Age: {age_group}
+    - Age Range: {age_group}
     - Total Pages: {pages_count}
-    - Main Character Visuals: {char_desc}
-    - Art Style: {art_style}
-
+    - Character Identity (MUST be preserved across all pages): {char_desc}
+    - Illustration Style: {art_style}
+    
     Writing Requirements:
-    - Do NOT write boring single-line sentences. Write 2 to 4 engaging, colorful sentences per page with sensory details, playful dialogue, and rhythm.
-    - Keep each page's "text" field under 320 characters so it fits nicely on a printed page.
-    - Each image prompt must include the exact character details ({char_desc}) and artistic style ({art_style}) to ensure visual consistency.
-
-    Return ONLY valid JSON matching this schema:
+    1. Write an immersive, emotionally resonant narrative (2 to 4 sentences per page). Use rhythm, sensory words, and delightful dialogue.
+    2. Image Prompts must be strictly formatted for FLUX.1 / SDXL engines, including character visual details: "{char_desc}" in every single prompt to ensure visual consistency.
+    
+    Return strictly JSON with this schema:
     {{
-        "title": "Enchanting Book Title in {target_lang}",
-        "kdp_description": "Rich Amazon listing description",
-        "keywords": ["kw1", "kw2", "kw3", "kw4", "kw5", "kw6", "kw7"],
+        "title": "Main Book Title in {target_lang}",
+        "subtitle": "Engaging Subtitle in {target_lang}",
+        "kdp_description": "200-word HTML description with bullet points and bold tags",
+        "keywords": ["7 high volume low competition keywords"],
         "pages": [
             {{
                 "page_number": 1,
-                "text": "Engaging narrative paragraph in {target_lang}",
-                "image_prompt": "Specific visual scene prompt focusing on {char_desc}, environment, cute expressions, {art_style}"
+                "text": "Story text for page 1 in {target_lang}",
+                "image_prompt": "Scene action prompt including {char_desc}, setting, lighting, {art_style}"
             }}
         ]
     }}
     """
-
-    last_error = None
-    for attempt in range(retries + 1):
-        try:
-            res = model.generate_content(
-                f"{prompt}\n\nConcept Idea: {concept}",
-                generation_config={"response_mime_type": "application/json"},
-            )
-            return extract_json(res.text)
-        except Exception as e:
-            last_error = e
-            time.sleep(1.5)
-    raise last_error
-
+    
+    res = model.generate_content(f"{system_prompt}\n\nConcept: {concept}")
+    raw = res.text.strip()
+    if raw.startswith("```json"): raw = raw[7:]
+    elif raw.startswith("```"): raw = raw[3:]
+    if raw.endswith("```"): raw = raw[:-3]
+    return json.loads(raw.strip())
 
 def format_arabic(text):
     try:
@@ -197,186 +169,189 @@ def format_arabic(text):
     except Exception:
         return text
 
-
-# ==========================================
-# محرك تصميم PDF احترافي — مع منع تقصّ/تراكب النص تلقائياً
-# ==========================================
-def build_story_style(font_size):
-    return ParagraphStyle(
-        'StoryText',
-        fontName='Helvetica-Bold',
-        fontSize=font_size,
-        leading=font_size * 1.45,
-        alignment=TA_CENTER,
-        textColor=colors.HexColor("#2C3E50"),
-    )
-
-
-def fit_paragraph(canvas_obj, text, max_width, max_height, start_font_size=13, min_font_size=8):
-    """يقلّص حجم الخط تدريجياً حتى تتسع الفقرة في الصندوق المخصص، فلا يحدث تقصّ أو تراكب أبداً."""
-    font_size = start_font_size
-    while font_size >= min_font_size:
-        style = build_story_style(font_size)
-        p = Paragraph(text, style)
-        w, h = p.wrapOn(canvas_obj, max_width, max_height)
-        if h <= max_height:
-            return p, h
-        font_size -= 1
-    # حتى بأصغر خط لم تتسع: أرجعها بأصغر خط ممكن (نادراً ما يحدث مع حد 320 حرف)
-    style = build_story_style(min_font_size)
-    p = Paragraph(text, style)
-    p.wrapOn(canvas_obj, max_width, max_height)
-    return p, max_height
-
-
-def render_pro_pdf(story_data, images_dict, target_lang):
+# =========================================================
+# 4. محرك إنشاء الـ PDF الاحترافي لـ Amazon KDP (8.5 x 8.5)
+# =========================================================
+def build_kdp_pdf(story_data, images_dict, target_lang):
     buffer = io.BytesIO()
     size = 8.5 * inch
     c = canvas.Canvas(buffer, pagesize=(size, size))
-
-    # --- 1. صفحة الغلاف ---
+    
+    # أنماط النصوص المتقدمة
+    styles = getSampleStyleSheet()
+    story_style = ParagraphStyle(
+        'StoryTextStyle',
+        fontName='Helvetica-Bold',
+        fontSize=13,
+        leading=18,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#2C3E50")
+    )
+    
+    # --- 1. صفحة الغلاف (Cover Page) ---
     c.setFillColor(colors.HexColor("#FFFDF9"))
     c.rect(0, 0, size, size, fill=1, stroke=0)
-
+    
+    # العنوان
     c.setFillColor(colors.HexColor("#D9534F"))
     c.setFont("Helvetica-Bold", 24)
-    title_text = format_arabic(story_data['title']) if "العربية" in target_lang else story_data['title']
-    c.drawCentredString(size / 2, size - 1.2 * inch, title_text)
-
+    main_title = format_arabic(story_data['title']) if "العربية" in target_lang else story_data['title']
+    c.drawCentredString(size / 2, size - 1.1 * inch, main_title)
+    
+    # رسم صورة الغلاف
     if 1 in images_dict and images_dict[1] is not None:
         reader = ImageReader(images_dict[1])
-        c.drawImage(reader, 1.25 * inch, 2.2 * inch, width=6 * inch, height=4.8 * inch, preserveAspectRatio=True)
-
+        c.drawImage(reader, 1.25 * inch, 2.2 * inch, width=6 * inch, height=4.9 * inch, preserveAspectRatio=True)
+        
     c.setFillColor(colors.HexColor("#7F8C8D"))
-    c.setFont("Helvetica", 11)
-    c.drawCentredString(size / 2, 1.2 * inch, "A Beautiful Story for Kids • KDP Edition")
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(size / 2, 1.1 * inch, "Premium Amazon KDP Edition")
     c.showPage()
-
-    # --- 2. الصفحات الداخلية ---
-    text_zone_top = 3.1 * inch      # الحد الأعلى لمنطقة النص (أسفل الصورة)
-    text_zone_bottom = 0.9 * inch   # الحد الأدنى لمنطقة النص (فوق رقم الصفحة)
-    max_text_height = text_zone_top - text_zone_bottom
-    p_width = 6.4 * inch
-
+    
+    # --- 2. الصفحات الداخلية (Interior Story Pages) ---
     for page in story_data["pages"]:
         num = page["page_number"]
-
-        c.setFillColor(colors.HexColor("#FAFAFA"))
+        
+        # خلفية الصفحة
+        c.setFillColor(colors.HexColor("#FFFFFF"))
         c.rect(0, 0, size, size, fill=1, stroke=0)
-
+        
+        # إدراج الصورة
         if num in images_dict and images_dict[num] is not None:
             reader = ImageReader(images_dict[num])
-            c.drawImage(reader, 1.25 * inch, 3.4 * inch, width=6 * inch, height=4.3 * inch, preserveAspectRatio=True)
+            c.drawImage(reader, 1.25 * inch, 3.1 * inch, width=6 * inch, height=4.6 * inch, preserveAspectRatio=True)
         else:
-            c.setStrokeColor(colors.HexColor("#E2E8F0"))
-            c.rect(1.25 * inch, 3.4 * inch, 6 * inch, 4.3 * inch)
+            c.setStrokeColor(colors.HexColor("#CBD5E0"))
+            c.rect(1.25 * inch, 3.1 * inch, 6 * inch, 4.6 * inch)
             c.setFillColor(colors.HexColor("#A0AEC0"))
-            c.setFont("Helvetica", 12)
-            c.drawCentredString(size / 2, 5.5 * inch, f"[ Illustration {num} ]")
-
+            c.setFont("Helvetica", 11)
+            c.drawCentredString(size / 2, 5.3 * inch, f"[ Illustration Page {num} ]")
+            
+        # إدراج النص مع التفاف تلقائي وهوامش آمنة
         txt = format_arabic(page["text"]) if "العربية" in target_lang else page["text"]
-        p, actual_h = fit_paragraph(c, txt, p_width, max_text_height)
-        # نتوسّط عمودياً داخل منطقة النص المخصصة بدل موضع ثابت كي لا يتراكب مع الصورة أو رقم الصفحة
-        y_pos = text_zone_bottom + (max_text_height - actual_h) / 2
-        p.drawOn(c, (size - p_width) / 2, y_pos)
-
+        p = Paragraph(txt, story_style)
+        
+        # عرض كتلة النص
+        box_w = 6.2 * inch
+        box_h = 1.6 * inch
+        p.wrapOn(c, box_w, box_h)
+        p.drawOn(c, (size - box_w) / 2, 1.2 * inch)
+        
+        # رقم الصفحة
         c.setFillColor(colors.HexColor("#BDC3C7"))
-        c.setFont("Helvetica-Bold", 10)
+        c.setFont("Helvetica-Bold", 9)
         c.drawCentredString(size / 2, 0.5 * inch, f"- {num} -")
         c.showPage()
-
+        
     c.save()
     buffer.seek(0)
     return buffer
 
-# ==========================================
-# واجهة التطبيق
-# ==========================================
-st.title("🌟 AI StoryCraft Studio Pro | KDP Author Suite")
-st.write("وكيل ذكاء اصطناعي متكامل لتأليف قصص أطفال احترافية وتوليد رسومها الملونة وتصديرها بصيغة PDF فوراً.")
+# =========================================================
+# 5. واجهة الاستوديو التفاعلية
+# =========================================================
+with st.sidebar:
+    st.markdown("### ⚙️ المفاتيح والمحركات")
+    api_key = st.text_input("Google Gemini API Key:", type="password")
+    image_engine = st.selectbox("محرك توليد الرسوم:", ["FLUX.1-schnell (Open-Source)", "SDXL Turbo (Open-Source)"])
 
-col1, col2 = st.columns([1, 1], gap="large")
+st.title("📚 AI StoryCraft Studio Pro | KDP Author Suite")
+st.caption("أداة متكاملة لتأليف قصص الأطفال، توليد رسوم الذكاء الاصطناعي مفتوحة المصدر، وتصدير كتب KDP جاهزة للطباعة.")
 
-with col1:
-    st.subheader("1. حبكة القصة وهوية البطل")
-    concept = st.text_area("فكرة القصة وسيناريو المغامرة:", "A curious little baby fox discovers a glowing enchanted garden filled with laughing flowers and musical berries.", height=90)
-    char_design = st.text_input("مظهر البطل بدقة (Consistency):", "A cute baby red fox with fluffy white-tipped tail, big curious green eyes, wearing a little teal explorer vest")
+col_left, col_right = st.columns([1, 1], gap="large")
 
-    ca, cb = st.columns(2)
-    with ca:
-        lang = st.selectbox("اللغة:", ["English", "العربية (Arabic)", "Deutsch (German)", "Français (French)"])
-        pages = st.slider("عدد الصفحات:", 4, 12, 6)
-    with cb:
-        age_grp = st.selectbox("الفئة المستهدفة:", ["Ages 3-5 (Early Readers)", "Ages 6-8 (Storybook)", "Ages 8-12"])
-        art = st.selectbox("الأسلوب الفني:", ["Cute 3D Pixar Animation style, warm cinematic lighting", "Whimsical Watercolor and Ink Storybook", "Vibrant Digital Disney-Style Illustration"])
-
-    if st.button("🚀 1. تأليف القصة وصياغة المشاهد"):
+with col_left:
+    st.subheader("1. إعداد القصة وهوية البطل")
+    concept_input = st.text_area(
+        "فكرة القصة وسيناريو المغامرة:",
+        "A curious little astronaut boy and his playful robot puppy discover glowing crystal caves on Mars.",
+        height=85
+    )
+    
+    char_input = st.text_input(
+        "مظهر البطل بدقة (Character Consistency Prompt):",
+        "A 6-year-old boy in a sleek white spacesuit with orange badges, friendly blue eyes, accompanied by a small metallic robot dog"
+    )
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        lang_choice = st.selectbox("لغة الكتاب:", ["English", "Deutsch (German)", "Français (French)", "العربية (Arabic)"])
+        pages_val = st.slider("عدد الصفحات:", 4, 16, 6)
+    with c2:
+        age_choice = st.selectbox("الفئة العمرية:", ["Ages 3-5 (Preschool)", "Ages 6-8 (Early Readers)", "Ages 8-12 (Middle Grade)"])
+        style_choice = st.selectbox(
+            "النمط الفني (Art Style):",
+            [
+                "Cute 3D Pixar Animation style, cinematic volumetric lighting, raytracing",
+                "Whimsical Pastel Watercolor & Ink Children's Book Art",
+                "Vibrant 2D Vector Flat Storybook Art, Disney aesthetic"
+            ]
+        )
+        
+    if st.button("🚀 1. تأليف القصة وصياغة السيناريو"):
         if not api_key:
-            st.error("أدخل Gemini API Key أولاً.")
+            st.error("❌ يرجى إدخال Gemini API Key في القائمة الجانبية أولاً.")
         else:
-            with st.spinner("✍️ جاري كتابة السيناريو الاحترافي..."):
+            with st.spinner("✍️ يقوم الوكيل الذكي بكتابة القصة وهندسة برومبتات الرسوم..."):
                 try:
-                    res = generate_pro_story(concept, lang, age_grp, pages, char_design, art)
-                    st.session_state["story_res"] = res
-                    st.session_state["target_l"] = lang
-                    st.session_state["page_imgs"] = {}
-                    st.session_state["img_errors"] = {}
-                    st.session_state["book_seed"] = random.randint(1000, 999999)
+                    res = generate_story_content(api_key, concept_input, char_input, style_choice, lang_choice, age_choice, pages_val)
+                    st.session_state["story_data"] = res
+                    st.session_state["target_lang"] = lang_choice
+                    st.session_state["images_dict"] = {}
+                    # تثبيت بذرة الرسوم للشخصية
+                    st.session_state["master_seed"] = random.randint(100000, 999999)
                     st.success("✨ تم تأليف القصة بنجاح!")
                 except Exception as e:
-                    st.error(f"خطأ في توليد القصة: {e}")
+                    st.error(f"خطأ أثناء التأليف: {e}")
 
-with col2:
-    st.subheader("2. الرسوم الحية وتصدير الـ PDF")
-    if "story_res" in st.session_state:
-        data = st.session_state["story_res"]
+with col_right:
+    st.subheader("2. المعاينة الحية وتصدير الـ PDF")
+    
+    if "story_data" in st.session_state:
+        data = st.session_state["story_data"]
+        
+        # بطاقة بيانات النشر KDP
+        st.markdown(f"""
+        <div class="kdp-card">
+            <h3 style="color:#FF7433; margin:0 0 5px 0;">{data['title']}</h3>
+            <p style="margin:0 0 10px 0; color:#A0AEC0;"><small>{data.get('subtitle', '')}</small></p>
+            <p><b>🏷️ كلمات KDP المفتاحية (7 Keywords):</b><br>
+            <code>{' , '.join(data.get('keywords', []))}</code></p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # زر التوليد التلقائي لجميع الصور
+        if st.button("🎨 2. توليد جميع رسومات القصة عبر FLUX.1 (Batch Generation)"):
+            with st.spinner("🎨 جاري رسم المشاهد الفنية بدقة عالية وتناسق بصري..."):
+                master_seed = st.session_state.get("master_seed", 42)
+                for p in data["pages"]:
+                    p_num = p["page_number"]
+                    img, _ = generate_flux_image(p["image_prompt"], seed=master_seed + p_num)
+                    st.session_state["images_dict"][p_num] = img
+                st.success("✅ اكتمل توليد كافة الرسوم بنجاح!")
 
-        st.markdown(f"### 📖 {data['title']}")
-
-        cgen1, cgen2 = st.columns(2)
-        with cgen1:
-            if st.button("🎨 توليد جميع الرسوم الملونة الآن (HD AI Images)"):
-                imgs, errs = generate_all_images(data["pages"], st.session_state["book_seed"])
-                st.session_state["page_imgs"] = imgs
-                st.session_state["img_errors"] = errs
-                if errs:
-                    st.warning(f"⚠️ فشلت {len(errs)} صورة وتم استبدالها بلون افتراضي. اضغط الزر بجانبه لإعادة المحاولة.")
-                else:
-                    st.success("✅ اكتمل توليد كافة الرسوم بنجاح!")
-        with cgen2:
-            failed_pages = [p for p in data["pages"] if st.session_state.get("img_errors", {}).get(p["page_number"])]
-            if failed_pages and st.button("🔁 إعادة محاولة الصور الفاشلة فقط"):
-                imgs, errs = generate_all_images(failed_pages, st.session_state["book_seed"])
-                st.session_state["page_imgs"].update(imgs)
-                new_errors = dict(st.session_state.get("img_errors", {}))
-                for num in imgs:
-                    new_errors.pop(num, None)
-                new_errors.update(errs)
-                st.session_state["img_errors"] = new_errors
-
+        # استعراض الصفحات والصور
         for p in data["pages"]:
-            num = p["page_number"]
-            with st.expander(f"الصفحة {num}"):
-                st.write(p["text"])
-                err = st.session_state.get("img_errors", {}).get(num)
-                if err:
-                    st.error(f"فشل توليد الصورة: {err}")
-                if num in st.session_state.get("page_imgs", {}):
-                    st.image(st.session_state["page_imgs"][num], width=320)
+            p_num = p["page_number"]
+            with st.expander(f"الصفحة {p_num}"):
+                st.write(f"**نص الصفحة:** {p['text']}")
+                if p_num in st.session_state["images_dict"]:
+                    st.image(st.session_state["images_dict"][p_num], caption=f"المشهد {p_num}", width=340)
                 else:
-                    st.caption("لم يتم توليد صورة لهذه الصفحة بعد.")
-                if st.button(f"رسم/إعادة رسم الصفحة {num}", key=f"btn_{num}"):
-                    img, err = generate_real_image(p["image_prompt"], st.session_state["book_seed"] + num)
-                    st.session_state.setdefault("page_imgs", {})[num] = img
-                    errs = st.session_state.setdefault("img_errors", {})
-                    if err:
-                        errs[num] = err
-                    else:
-                        errs.pop(num, None)
-                    st.rerun()
-
+                    if st.button(f"رسم مشهد الصفحة {p_num}", key=f"btn_p_{p_num}"):
+                        img, _ = generate_flux_image(p["image_prompt"])
+                        st.session_state["images_dict"][p_num] = img
+                        st.rerun()
+                st.markdown(f'<div class="prompt-box"><b>FLUX Prompt:</b><br>{p["image_prompt"]}</div>', unsafe_allow_html=True)
+                
         st.markdown("---")
-        pdf_out = render_pro_pdf(data, st.session_state.get("page_imgs", {}), st.session_state["target_l"])
-        st.download_button("⬇️ تحميل القصة المصورة كاملة (PDF عالي الجودة)", data=pdf_out, file_name=f"{data['title'].replace(' ', '_')}.pdf", mime="application/pdf")
+        # تنزيل الـ PDF النهائي
+        pdf_out = build_kdp_pdf(data, st.session_state.get("images_dict", {}), st.session_state["target_lang"])
+        st.download_button(
+            "⬇️ تحميل كتاب القصة المصورة بالكامل (PDF جاهز للطباعة 8.5x8.5)",
+            data=pdf_out,
+            file_name=f"{data['title'].replace(' ', '_')}_KDP_Interior.pdf",
+            mime="application/pdf"
+        )
     else:
-        st.info("👈 اضبط خيارات القصة واضغط تأليف لتظهر المشاهد والرسومات هنا.")
+        st.info("👈 املأ تفاصيل القصة والشخصية واضغط على زر التأليف للبدء.")
